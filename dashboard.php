@@ -68,6 +68,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: login.php');
         exit();
     }
+
+// --- AJOUT FAPSHI ---
+if ($action === 'fapshi_initiate') {
+    require_once 'fapshi_helper.php';
+    
+    $amount = intval($_POST['amount'] ?? 0);
+    $email = $user_email; // Utilise l'email de l'utilisateur connecté
+    $externalId = 'PAY-' . time(); // ID unique pour cette tentative
+    $description = "Paiement Alipayement - Utilisateur: " . $user_id;
+
+    if ($amount < 100) {
+        $error_message = "Le montant minimum est de 100 FCFA.";
+    } else {
+        $result = createFapshiPaymentLink($amount, $email, $user_id, $externalId, $description);
+        
+        if ($result['success']) {
+            // Redirection immédiate vers Fapshi
+            header("Location: " . $result['link']);
+            exit();
+        } else {
+            $error_message = "Erreur Fapshi : " . $result['message'];
+        }
+    }
+}
+// --- FIN AJOUT FAPSHI ---
     
     if ($action === 'make_payment') {
         $amount_xaf = intval($_POST['amount_xaf'] ?? 0);
@@ -992,37 +1017,45 @@ $total_pages = ceil($total_count / $per_page);
         }
 
         // Confirm Payment Button
-        const confirmPaymentBtn = document.getElementById('confirmPaymentBtn');
-        if (confirmPaymentBtn) {
-            confirmPaymentBtn.addEventListener('click', function() {
-                const method = document.querySelector('input[name="paymentMethod"]:checked').value;
-                const amount = document.getElementById('paymentAmount').value;
+const confirmPaymentBtn = document.getElementById('confirmPaymentBtn');
+if (confirmPaymentBtn) {
+    confirmPaymentBtn.addEventListener('click', function() {
+        const amount = document.getElementById('paymentAmount').value;
+        const method = document.querySelector('input[name="paymentMethod"]:checked').value;
 
-                if (!amount || amount <= 0) {
-                    alert('Veuillez entrer un montant valide');
-                    return;
-                }
-
-                if (method === 'mtn') {
-                    const mtnNumber = document.getElementById('mtnNumber').value;
-                    if (!mtnNumber) {
-                        alert('Veuillez entrer votre numéro MTN');
-                        return;
-                    }
-                }
-
-                if (method === 'orange') {
-                    const orangeNumber = document.getElementById('orangeNumber').value;
-                    if (!orangeNumber) {
-                        alert('Veuillez entrer votre numéro orange');
-                        return;
-                    }
-                }
-
-                alert('Paiement de ' + parseInt(amount).toLocaleString('fr-FR') + ' FCFA soumis avec succès!');
-                bootstrap.Modal.getInstance(document.getElementById('paymentModal')).hide();
-            });
+        if (!amount || amount < 100) {
+            alert("Veuillez entrer un montant valide (min 100 FCFA).");
+            return;
         }
+
+        // Si c'est un paiement mobile money (MTN/Orange), on utilise Fapshi
+        if (method === 'mtn' || method === 'orange') {
+            // Créer un formulaire dynamique pour envoyer les données en POST
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = 'dashboard.php';
+
+            const actionInput = document.createElement('input');
+            actionInput.type = 'hidden';
+            actionInput.name = 'action';
+            actionInput.value = 'fapshi_initiate';
+            form.appendChild(actionInput);
+
+            const amountInput = document.createElement('input');
+            amountInput.type = 'hidden';
+            amountInput.name = 'amount';
+            amountInput.value = amount;
+            form.appendChild(amountInput);
+
+            document.body.appendChild(form);
+            form.submit();
+        } else {
+            // Pour les autres méthodes (QR Code, etc.), gardez votre logique actuelle
+            alert("Cette méthode de paiement sera traitée manuellement par l'administrateur.");
+            // ... votre logique existante ...
+        }
+    });
+}
 
         // Recharge Amount Calculation
         const rechargeAmountInput = document.getElementById('rechargeAmount');

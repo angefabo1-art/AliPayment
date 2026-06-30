@@ -3,6 +3,7 @@ session_start();
 
 // Include database connection
 require_once __DIR__ . '/config/db.php';
+require_once __DIR__ . '/fapshi_helper.php'; // AJOUT FAPSHI
 global $pdo;
 
 // Verify PDO connection is available
@@ -17,7 +18,6 @@ if (!isset($_SESSION['admin_id']) || !isset($_SESSION['admin_role']) || $_SESSIO
 }
 
 // Récupérer le taux de change actuel
-// No default rate - must be set by admin
 $exchange_rate_data = getRow($pdo, "SELECT rate, updated_at FROM exchange_rates WHERE currency_from = 'RMB' AND currency_to = 'XAF' ORDER BY updated_at DESC LIMIT 1");
 $current_exchange_rate = $exchange_rate_data ? floatval($exchange_rate_data['rate']) : null;
 $exchange_rate_updated_at = $exchange_rate_data ? htmlspecialchars($exchange_rate_data['updated_at']) : null;
@@ -34,13 +34,39 @@ $error_message = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     
+    // --- AJOUT ACTION FAPSHI POUR L'ADMIN ---
+    if ($action === 'check_fapshi_status') {
+        $transId = $_POST['fapshi_trans_id'] ?? '';
+        $db_trans_id = $_POST['db_trans_id'] ?? '';
+        
+        if (!empty($transId)) {
+            // Appel à l'API Fapshi pour vérifier le statut
+            // Note: Il faut ajouter cette fonction dans fapshi_helper.php
+            $status_result = getFapshiTransactionStatus($transId);
+            
+            if ($status_result['success']) {
+                $status = $status_result['status']; // SUCCESSFUL, FAILED, EXPIRED, PENDING
+                
+                if ($status === 'SUCCESSFUL') {
+                    // Mettre à jour la base de données
+                    executeQuery($pdo, "UPDATE transactions SET status = 'completed' WHERE id = ?", [$db_trans_id]);
+                    $success_message = "Transaction Fapshi réussie ! Le solde a été mis à jour.";
+                } else {
+                    $error_message = "Statut Fapshi : " . $status;
+                }
+            } else {
+                $error_message = "Erreur lors de la vérification : " . $status_result['message'];
+            }
+        }
+    }
+    // --- FIN AJOUT FAPSHI ---
+
     if ($action === 'update_exchange_rate') {
         $new_rate = floatval($_POST['new_rate'] ?? 0);
         
         if ($new_rate <= 0) {
             $error_message = "Le taux de change doit être supérieur à 0.";
         } else {
-            // Insert into exchange_rates table
             executeQuery(
                 $pdo,
                 "INSERT INTO exchange_rates (currency_from, currency_to, rate, set_by, updated_at) VALUES (?, ?, ?, ?, NOW())",
@@ -58,7 +84,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (empty($alipay_number)) {
             $error_message = "Le numéro Alipay est requis.";
         } else {
-            // Update or insert Alipay number
             $existing = getRow($pdo, "SELECT id FROM alipay_settings LIMIT 1");
             
             if ($existing) {
@@ -89,7 +114,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } elseif ($file['size'] > 10 * 1024 * 1024) {
                 $error_message = "La taille du fichier ne doit pas dépasser 10 Mo.";
             } else {
-                // Create uploads directory if it doesn't exist
                 if (!is_dir('uploads/alipay')) {
                     mkdir('uploads/alipay', 0755, true);
                 }
@@ -98,7 +122,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $filepath = 'uploads/alipay/' . $filename;
                 
                 if (move_uploaded_file($file['tmp_name'], $filepath)) {
-                    // Update database
                     $existing = getRow($pdo, "SELECT id FROM alipay_settings LIMIT 1");
                     
                     if ($existing) {
@@ -125,10 +148,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// Récupérer les paiements en attente
+// Récupérer les paiements en attente (Inclure le champ fapshi_trans_id si vous l'avez ajouté)
 $pending_payments = executeQuery(
     $pdo,
-    "SELECT id, user_id, amount, recipient_email, description, created_at FROM transactions WHERE status = 'pending' ORDER BY created_at DESC LIMIT 20"
+    "SELECT id, user_id, amount, recipient_email, description, created_at, status FROM transactions WHERE status = 'pending' ORDER BY created_at DESC LIMIT 20"
 );
 $pending_payments = is_array($pending_payments) ? $pending_payments : [];
 ?>
@@ -315,65 +338,72 @@ $pending_payments = is_array($pending_payments) ? $pending_payments : [];
                                                         <i class="fas fa-upload me-2"></i>Parcourir
                                                     </label>
                                                 </div>
-                                                <small class="text-muted d-block mt-2">
-                                                    Formats acceptés: JPG, PNG, GIF, PDF (Max: 10 Mo)
-                                                </small>
+                                                <small class="text-muted mt-2 d-block">Formats: JPG, PNG, GIF, PDF (Max 10 Mo)</small>
                                             </div>
 
-                                            <div class="qr-preview" id="qrcodePreview">
-                                                <?php if (!empty($alipay_qr_code)): ?>
-                                                    <img src="uploads/alipay/<?php echo htmlspecialchars($alipay_qr_code); ?>" alt="QR Code Alipay">
-                                                <?php else: ?>
-                                                    <div class="text-center text-muted">
-                                                        <i class="fas fa-qrcode" style="font-size: 3rem; opacity: 0.3;"></i>
-                                                        <p class="mt-3">Aucun QR code téléchargé</p>
-                                                    </div>
-                                                <?php endif; ?>
-                                            </div>
-
-                                            <button type="submit" class="btn btn-primary w-100 mt-4">
-                                                <i class="fas fa-save me-2"></i>Enregistrer le QR Code
+                                            <button type="submit" class="btn btn-primary w-100 rounded-lg">
+                                                <i class="fas fa-save me-2"></i>Mettre à jour le QR Code
                                             </button>
                                         </form>
                                     </div>
                                 </div>
                             </div>
 
-                            <!-- Alipay Number Section -->
+                            <!-- QR Code Preview Section -->
                             <div class="col-lg-6 mb-4">
                                 <div class="card shadow-sm border-0 rounded-lg">
                                     <div class="card-header bg-light border-bottom">
-                                        <h5 class="mb-0 fw-bold">
-                                            <i class="fas fa-hashtag me-2"></i>Numéro Alipay du Fournisseur
-                                        </h5>
+                                        <h5 class="mb-0 fw-bold">Aperçu Actuel</h5>
                                     </div>
-                                    <div class="card-body p-4">
-                                        <form method="POST">
-                                            <input type="hidden" name="action" value="update_alipay">
-                                            
-                                            <div class="mb-4">
-                                                <label for="alipayNumber" class="form-label fw-bold">Numéro Alipay Chinois</label>
-                                                <input type="text" class="form-control form-control-lg" id="alipayNumber" name="alipay_number" placeholder="Ex: 1234567890123456" value="<?php echo htmlspecialchars($alipay_number ?? ''); ?>">
-                                                <small class="text-muted d-block mt-2">
-                                                    Le numéro Alipay unique du fournisseur
-                                                </small>
-                                            </div>
-
-                                            <div class="stat-card bg-light mb-4">
-                                                <div class="text-center">
-                                                    <small class="text-muted d-block mb-2">NUMÉRO ACTUELLEMENT ENREGISTRÉ</small>
-                                                    <h5 class="fw-bold text-primary" id="currentAlipayNumber">
-                                                        <?php echo !empty($alipay_number) ? htmlspecialchars($alipay_number) : 'Aucun numéro enregistré'; ?>
-                                                    </h5>
+                                    <div class="card-body p-4 text-center">
+                                        <div class="qr-preview mb-3" id="qrcodePreview">
+                                            <?php if ($alipay_qr_code): ?>
+                                                <?php if (strtolower(pathinfo($alipay_qr_code, PATHINFO_EXTENSION)) === 'pdf'): ?>
+                                                    <div class="text-center">
+                                                        <i class="fas fa-file-pdf text-danger mb-2" style="font-size: 4rem;"></i>
+                                                        <p class="mb-0 fw-bold">Document PDF</p>
+                                                        <a href="uploads/alipay/<?php echo htmlspecialchars($alipay_qr_code); ?>" target="_blank" class="btn btn-sm btn-outline-primary mt-2">Voir le PDF</a>
+                                                    </div>
+                                                <?php else: ?>
+                                                    <img src="uploads/alipay/<?php echo htmlspecialchars($alipay_qr_code); ?>" alt="Alipay QR Code">
+                                                <?php endif; ?>
+                                            <?php else: ?>
+                                                <div class="text-muted">
+                                                    <i class="fas fa-image mb-2" style="font-size: 3rem;"></i>
+                                                    <p class="mb-0">Aucun QR Code défini</p>
                                                 </div>
-                                            </div>
-
-                                            <button type="submit" class="btn btn-primary w-100">
-                                                <i class="fas fa-save me-2"></i>Enregistrer le Numéro
-                                            </button>
-                                        </form>
+                                            <?php endif; ?>
+                                        </div>
+                                        <?php if ($alipay_qr_code): ?>
+                                            <small class="text-muted">Dernière mise à jour: <?php echo htmlspecialchars($alipay_data['updated_at']); ?></small>
+                                        <?php endif; ?>
                                     </div>
                                 </div>
+                            </div>
+                        </div>
+
+                        <!-- Alipay Number Section -->
+                        <div class="card shadow-sm border-0 rounded-lg mb-4">
+                            <div class="card-header bg-light border-bottom">
+                                <h5 class="mb-0 fw-bold">
+                                    <i class="fas fa-hashtag me-2"></i>Numéro Alipay du Fournisseur
+                                </h5>
+                            </div>
+                            <div class="card-body p-4">
+                                <form method="POST">
+                                    <input type="hidden" name="action" value="update_alipay">
+                                    <div class="row align-items-end">
+                                        <div class="col-md-8 mb-3 mb-md-0">
+                                            <label for="alipayNumber" class="form-label fw-bold">Numéro Alipay</label>
+                                            <input type="text" class="form-control" id="alipayNumber" name="alipay_number" value="<?php echo htmlspecialchars($alipay_number ?? ''); ?>" placeholder="Entrez le numéro Alipay">
+                                        </div>
+                                        <div class="col-md-4">
+                                            <button type="submit" class="btn btn-primary w-100 rounded-lg">
+                                                <i class="fas fa-save me-2"></i>Mettre à jour le Numéro
+                                            </button>
+                                        </div>
+                                    </div>
+                                </form>
                             </div>
                         </div>
                     </div>
@@ -381,81 +411,51 @@ $pending_payments = is_array($pending_payments) ? $pending_payments : [];
                     <!-- Exchange Rate Tab -->
                     <div id="exchange-content" class="tab-content" style="display: none;">
                         <h2 class="mb-4 fw-bold">Gestion du Taux de Change</h2>
-
-                        <div class="alert alert-warning alert-dismissible fade show rounded-lg" role="alert">
-                            <i class="fas fa-exclamation-triangle me-2"></i>
-                            <strong>Attention:</strong> Seul l'administrateur peut modifier le taux de change. Cette modification affectera tous les clients en temps réel.
-                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                        </div>
-
+                        
                         <div class="row">
-                            <div class="col-lg-6 mb-4">
-                                <div class="card shadow-sm border-0 rounded-lg">
-                                    <div class="card-header bg-light border-bottom">
-                                        <h5 class="mb-0 fw-bold">
-                                            <i class="fas fa-exchange-alt me-2"></i>Taux Actuel
-                                        </h5>
+                            <div class="col-lg-4 mb-4">
+                                <div class="stat-card text-center">
+                                    <small class="text-muted fw-bold d-block mb-2">TAUX ACTUEL</small>
+                                    <div class="exchange-rate-display mb-2">
+                                        <?php echo $current_exchange_rate ? number_format($current_exchange_rate, 2, ',', ',') : 'Non défini'; ?>
                                     </div>
-                                    <div class="card-body p-4 text-center">
-                                        <?php if ($current_exchange_rate !== null): ?>
-                                        <small class="text-muted d-block mb-3">CONVERSION</small>
-                                        <div class="exchange-rate-display mb-3">
-                                            <span id="displayExchangeRate"><?php echo $current_exchange_rate; ?></span> <small class="text-muted" style="font-size: 1.2rem;">XAF/RMB</small>
-                                        </div>
-                                        <p class="text-muted mb-0">1 RMB = <strong id="rmbToXaf"><?php echo number_format($current_exchange_rate, 2, ',', ','); ?></strong> FCFA</p>
-                                        <?php if ($exchange_rate_updated_at): ?>
-                                            <hr>
-                                            <small class="text-muted d-block">
-                                                <i class="fas fa-clock me-1"></i>Mis à jour le <?php echo date('d/m/Y à H:i', strtotime($exchange_rate_updated_at)); ?>
-                                            </small>
-                                        <?php endif; ?>
-                                        <?php else: ?>
-                                        <div class="alert alert-danger mb-0">
-                                            <i class="fas fa-exclamation-circle me-2"></i>
-                                            <strong>Aucun taux défini</strong>
-                                            <p class="mb-0 mt-2 small">Le taux de change n'a pas été configuré. Veuillez le définir ci-dessous.</p>
-                                        </div>
-                                        <?php endif; ?>
-                                    </div>
+                                    <small class="text-muted d-block">1 RMB = <?php echo $current_exchange_rate ? number_format($current_exchange_rate, 2, ',', ',') : '---'; ?> FCFA</small>
+                                    <?php if ($exchange_rate_updated_at): ?>
+                                        <hr>
+                                        <small class="text-muted">Mis à jour le: <?php echo $exchange_rate_updated_at; ?></small>
+                                    <?php endif; ?>
                                 </div>
                             </div>
-
-                            <div class="col-lg-6 mb-4">
+                            
+                            <div class="col-lg-8 mb-4">
                                 <div class="card shadow-sm border-0 rounded-lg">
                                     <div class="card-header bg-light border-bottom">
-                                        <h5 class="mb-0 fw-bold">
-                                            <i class="fas fa-edit me-2"></i>Modifier le Taux
-                                        </h5>
+                                        <h5 class="mb-0 fw-bold">Mettre à jour le Taux</h5>
                                     </div>
                                     <div class="card-body p-4">
                                         <form method="POST">
                                             <input type="hidden" name="action" value="update_exchange_rate">
-                                            
                                             <div class="mb-4">
-                                                <label for="newExchangeRate" class="form-label fw-bold">Nouveau Taux de Change</label>
+                                                <label for="newExchangeRate" class="form-label fw-bold">Nouveau Taux (1 RMB en FCFA)</label>
                                                 <div class="input-group input-group-lg">
-                                                    <input type="number" class="form-control" id="newExchangeRate" name="new_rate" placeholder="Ex: 6" min="0.01" step="0.01" required>
-                                                    <span class="input-group-text">XAF/RMB</span>
+                                                    <span class="input-group-text">1 RMB =</span>
+                                                    <input type="number" step="0.01" class="form-control" id="newExchangeRate" name="new_rate" placeholder="Ex: 95.50" required>
+                                                    <span class="input-group-text">FCFA</span>
                                                 </div>
-                                                <small class="text-muted d-block mt-2">
-                                                    Entrez le nouveau taux de change (1 RMB = X FCFA)
-                                                </small>
+                                                <small class="text-muted mt-2 d-block">Exemple: Si vous entrez 100, 1 RMB vaudra 100 FCFA pour les clients.</small>
                                             </div>
-
-                                            <?php if ($current_exchange_rate !== null): ?>
-                                            <div class="alert alert-info alert-sm" role="alert">
-                                                <i class="fas fa-calculator me-2"></i>
-                                                <strong>Aperçu:</strong> 100 RMB = <span id="previewXaf">-</span> FCFA
+                                            
+                                            <div class="alert alert-warning border-0 rounded-lg mb-4">
+                                                <div class="d-flex">
+                                                    <i class="fas fa-exclamation-triangle mt-1 me-3"></i>
+                                                    <div>
+                                                        <strong>Attention:</strong> Le changement de taux sera effectif immédiatement pour tous les calculs sur le tableau de bord des clients.
+                                                    </div>
+                                                </div>
                                             </div>
-                                            <?php else: ?>
-                                            <div class="alert alert-warning alert-sm" role="alert">
-                                                <i class="fas fa-info-circle me-2"></i>
-                                                <strong>Premier taux:</strong> Ce sera le premier taux de change défini
-                                            </div>
-                                            <?php endif; ?>
-
-                                            <button type="submit" class="btn btn-primary w-100 btn-lg">
-                                                <i class="fas fa-save me-2"></i>Mettre à Jour le Taux
+                                            
+                                            <button type="submit" class="btn btn-danger btn-lg w-100 rounded-lg">
+                                                <i class="fas fa-sync-alt me-2"></i>Appliquer le Nouveau Taux
                                             </button>
                                         </form>
                                     </div>
@@ -466,45 +466,67 @@ $pending_payments = is_array($pending_payments) ? $pending_payments : [];
 
                     <!-- Payments Tab -->
                     <div id="payments-content" class="tab-content" style="display: none;">
-                        <h2 class="mb-4 fw-bold">Paiements en Attente</h2>
-
-                        <div class="card shadow-sm border-0 rounded-lg">
-                            <div class="card-header bg-light border-bottom">
-                                <h5 class="mb-0 fw-bold">
-                                    <i class="fas fa-credit-card me-2"></i>Transactions Pendantes
-                                </h5>
+                        <h2 class="mb-4 fw-bold">Gestion des Paiements</h2>
+                        
+                        <div class="card shadow-sm border-0 rounded-lg overflow-hidden">
+                            <div class="card-header bg-light border-bottom d-flex justify-content-between align-items-center">
+                                <h5 class="mb-0 fw-bold">Paiements en Attente</h5>
+                                <span class="badge bg-primary"><?php echo count($pending_payments); ?> En attente</span>
                             </div>
                             <div class="card-body p-0">
                                 <div class="table-responsive">
-                                    <table class="table table-hover mb-0">
+                                    <table class="table table-hover align-middle mb-0">
                                         <thead class="table-light">
                                             <tr>
                                                 <th>Date</th>
-                                                <th>Montant (XAF)</th>
-                                                <th>Bénéficiaire</th>
-                                                <th>Description</th>
-                                                <th>Actions</th>
+                                                <th>Client ID</th>
+                                                <th>Montant</th>
+                                                <th>Détails</th>
+                                                <th>Action</th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                             <?php if (count($pending_payments) > 0): ?>
                                                 <?php foreach ($pending_payments as $payment): ?>
                                                 <tr>
-                                                    <td><?php echo date('d/m/Y H:i', strtotime($payment['created_at'])); ?></td>
-                                                    <td><strong><?php echo number_format($payment['amount'], 0, ',', ','); ?> XAF</strong></td>
-                                                    <td><?php echo htmlspecialchars($payment['recipient_email'] ?? '-'); ?></td>
-                                                    <td><?php echo htmlspecialchars($payment['description'] ?? '-'); ?></td>
+                                                    <td class="small"><?php echo date('d/m/Y H:i', strtotime($payment['created_at'])); ?></td>
                                                     <td>
-                                                        <a href="payment_confirmation.php?transaction_id=<?php echo htmlspecialchars($payment['id']); ?>" class="btn btn-sm btn-primary">
-                                                            <i class="fas fa-eye me-1"></i>Voir
-                                                        </a>
+                                                        <span class="fw-bold">ID: <?php echo $payment['user_id']; ?></span><br>
+                                                        <small class="text-muted"><?php echo htmlspecialchars($payment['recipient_email'] ?? 'N/A'); ?></small>
+                                                    </td>
+                                                    <td>
+                                                        <span class="text-primary fw-bold"><?php echo number_format($payment['amount'], 0, ',', ','); ?> XAF</span>
+                                                    </td>
+                                                    <td>
+                                                        <small class="d-block text-truncate" style="max-width: 200px;"><?php echo htmlspecialchars($payment['description']); ?></small>
+                                                    </td>
+                                                    <td>
+                                                        <!-- SI FAPSHI EST UTILISÉ (Vérification manuelle possible ici) -->
+                                                        <?php if (strpos($payment['description'], 'Fapshi') !== false || strpos($payment['description'], 'PAY-') !== false): ?>
+                                                            <form method="POST" class="d-inline">
+                                                                <input type="hidden" name="action" value="check_fapshi_status">
+                                                                <input type="hidden" name="db_trans_id" value="<?php echo $payment['id']; ?>">
+                                                                <input type="hidden" name="fapshi_trans_id" value="<?php echo substr($payment['description'], strpos($payment['description'], 'PAY-')); ?>">
+                                                                <button type="submit" class="btn btn-sm btn-info text-white rounded-pill px-3">
+                                                                    <i class="fas fa-search me-1"></i>Vérifier Fapshi
+                                                                </button>
+                                                            </form>
+                                                        <?php else: ?>
+                                                            <button class="btn btn-sm btn-success rounded-pill px-3">
+                                                                <i class="fas fa-check me-1"></i>Valider
+                                                            </button>
+                                                            <button class="btn btn-sm btn-outline-danger rounded-pill px-3">
+                                                                <i class="fas fa-times me-1"></i>Rejeter
+                                                            </button>
+                                                        <?php endif; ?>
                                                     </td>
                                                 </tr>
                                                 <?php endforeach; ?>
                                             <?php else: ?>
                                                 <tr>
-                                                    <td colspan="5" class="text-center py-4 text-muted">
-                                                        <i class="fas fa-inbox me-2"></i>Aucun paiement en attente
+                                                    <td colspan="5" class="text-center py-5 text-muted">
+                                                        <i class="fas fa-inbox d-block mb-3" style="font-size: 3rem; opacity: 0.3;"></i>
+                                                        Aucun paiement en attente
                                                     </td>
                                                 </tr>
                                             <?php endif; ?>
@@ -524,24 +546,20 @@ $pending_payments = is_array($pending_payments) ? $pending_payments : [];
         function switchTab(tabName, event) {
             event.preventDefault();
             
-            // Hide all tabs
             document.querySelectorAll('.tab-content').forEach(tab => {
                 tab.style.display = 'none';
             });
             
-            // Remove active class from all links
             document.querySelectorAll('.nav-link').forEach(link => {
                 link.classList.remove('active');
             });
             
-            // Show selected tab
             const tabId = tabName + '-content';
             const tabElement = document.getElementById(tabId);
             if (tabElement) {
                 tabElement.style.display = 'block';
             }
             
-            // Add active class to clicked link
             event.target.closest('.nav-link').classList.add('active');
         }
 
@@ -566,17 +584,6 @@ $pending_payments = is_array($pending_payments) ? $pending_payments : [];
                     };
                     reader.readAsDataURL(file);
                 }
-            });
-        }
-
-        // Exchange Rate Preview
-        const newExchangeRateInput = document.getElementById('newExchangeRate');
-        const previewXaf = document.getElementById('previewXaf');
-
-        if (newExchangeRateInput) {
-            newExchangeRateInput.addEventListener('input', function() {
-                const rate = parseFloat(this.value) || 0;
-                previewXaf.textContent = Math.floor(100 * rate).toLocaleString('fr-FR');
             });
         }
     </script>
